@@ -1,1 +1,21 @@
 __pycache__/
+GTSRB/
+*.bin
+*.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Datos descargados
+data/
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Editores
+.vscode/
+.idea/
