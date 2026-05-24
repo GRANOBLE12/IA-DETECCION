@@ -531,6 +531,7 @@ REAR_CAMERA_SCRIPT = """
         constraints.video = v;
       }
       console.log('[traffic-signs] getUserMedia con facingMode=environment', constraints);
+      if (document.body) document.body.setAttribute('data-rear-camera-active', 'yes');
     } catch (e) {
       console.warn('[traffic-signs] patch getUserMedia fallo:', e);
     }
@@ -541,6 +542,9 @@ REAR_CAMERA_SCRIPT = """
     });
   };
   console.log('[traffic-signs] patch de getUserMedia instalado en <head>');
+  document.addEventListener('DOMContentLoaded', function() {
+    if (document.body) document.body.setAttribute('data-rear-camera-patch', 'installed');
+  });
 })();
 </script>
 """
@@ -772,6 +776,25 @@ body, .gradio-container {
     /* Footer */
     .footer-text {
         font-size: 0.75rem !important;
+    }
+
+    /* Badge diagnóstico de cámara trasera — visible solo en móvil */
+    body[data-rear-camera-patch="installed"]::before {
+        content: "📷 patch trasera: instalado";
+        position: fixed;
+        top: 4px;
+        right: 4px;
+        z-index: 9999;
+        font-size: 10px;
+        color: #ff9500;
+        background: rgba(0,0,0,0.7);
+        padding: 2px 6px;
+        border-radius: 4px;
+        pointer-events: none;
+    }
+    body[data-rear-camera-active="yes"]::before {
+        content: "📷 trasera: activa ✓";
+        color: #00ff88;
     }
 }
 """
