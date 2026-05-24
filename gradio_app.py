@@ -513,6 +513,38 @@ def responder_pregunta(pregunta, historial):
 
 # ─── Interfaz Gradio ──────────────────────────────────────────────────────────
 
+# Script inyectado en <head> del documento — corre ANTES de cualquier JS de Gradio.
+# Fuerza la cámara trasera (environment) sobrescribiendo getUserMedia globalmente.
+# facingMode:'ideal' degrada limpiamente en desktop a la única cámara disponible.
+REAR_CAMERA_SCRIPT = """
+<script>
+(function() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  var orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = function(constraints) {
+    try {
+      constraints = constraints || {};
+      if (constraints.video) {
+        var v = (typeof constraints.video === 'object') ? constraints.video : {};
+        v.facingMode = { ideal: 'environment' };
+        delete v.deviceId;
+        constraints.video = v;
+      }
+      console.log('[traffic-signs] getUserMedia con facingMode=environment', constraints);
+    } catch (e) {
+      console.warn('[traffic-signs] patch getUserMedia fallo:', e);
+    }
+    return orig.call(this, constraints).catch(function(err) {
+      console.warn('[traffic-signs] facingMode rechazado, reintentando sin el:', err);
+      try { delete constraints.video.facingMode; } catch (_) {}
+      return orig.call(this, constraints);
+    });
+  };
+  console.log('[traffic-signs] patch de getUserMedia instalado en <head>');
+})();
+</script>
+"""
+
 CSS = """
 /* ── Fondo general ── */
 body, .gradio-container {
@@ -746,27 +778,10 @@ body, .gradio-container {
 
 EJEMPLOS_IMAGENES = []  # Se pueden agregar si hay imagenes de ejemplo en el repo
 
-with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo:
+with gr.Blocks(css=CSS, head=REAR_CAMERA_SCRIPT, title="Reconocimiento de Señales de Tránsito") as demo:
 
     # ── Header ──
     gr.HTML("""
-    <script>
-    /* Fuerza la cámara TRASERA en dispositivos móviles al iniciar getUserMedia */
-    (function() {
-      var isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i
-        .test(navigator.userAgent);
-      if (!isMobile || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-      var orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-      navigator.mediaDevices.getUserMedia = function(constraints) {
-        if (constraints && constraints.video) {
-          var v = (typeof constraints.video === 'object') ? constraints.video : {};
-          v.facingMode = { ideal: 'environment' };
-          constraints.video = v;
-        }
-        return orig(constraints);
-      };
-    })();
-    </script>
     <div class="header-box">
         <h1>🚦 Reconocimiento de Señales de Tránsito</h1>
         <p>Sistema de visión por computador con agente dual-transformer</p>
