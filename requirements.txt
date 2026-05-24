@@ -1,0 +1,8 @@
+torch
+torchvision
+transformers
+opencv-python-headless
+Pillow
+numpy
+gradio
+ultralytics
