@@ -4,5 +4,6 @@ transformers
 opencv-python-headless
 Pillow
 numpy
-gradio
+gradio==5.31.0
+audioop-lts
 ultralytics
