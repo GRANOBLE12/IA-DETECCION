@@ -5,5 +5,5 @@ opencv-python-headless
 Pillow
 numpy
 gradio==5.31.0
-audioop-lts
+audioop-lts; python_version >= "3.13"
 ultralytics
