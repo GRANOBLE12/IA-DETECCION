@@ -308,21 +308,19 @@ def procesar_webcam_frame(frame):
         draw = ImageDraw.Draw(img_out)
         x1, y1, x2, y2 = box
 
-        # Caja gruesa
-        for o in range(3):
+        font, border_w, pad_x, pad_y = _drawing_metrics(img_out.height)
+
+        # Caja proporcional al alto de la imagen
+        for o in range(border_w):
             draw.rectangle([x1-o, y1-o, x2+o, y2+o], outline=C_ORANGE)
 
-        # Etiqueta arriba de la caja
+        # Etiqueta arriba de la caja con tamaño proporcional
         label = f"{name}  {conf:.0%}"
-        try:
-            font = ImageFont.truetype("arial.ttf", 18)
-        except Exception:
-            font = ImageFont.load_default()
         bb     = draw.textbbox((0, 0), label, font=font)
         tw, th = bb[2]-bb[0], bb[3]-bb[1]
-        ty     = max(y1 - th - 10, 2)
-        draw.rectangle([x1, ty, x1+tw+10, ty+th+6], fill=C_ORANGE)
-        draw.text((x1+5, ty+3), label, fill=C_BLACK, font=font)
+        ty     = max(y1 - th - pad_y - 2, 2)
+        draw.rectangle([x1, ty, x1+tw+pad_x, ty+th+pad_y], fill=C_ORANGE)
+        draw.text((x1 + pad_x//2, ty + pad_y//2), label, fill=C_BLACK, font=font)
 
         # ── RAZONAR: estabilidad temporal antes de activar T5 ──────────────────
         with _agent_state["lock"]:
@@ -347,6 +345,21 @@ def procesar_webcam_frame(frame):
     # Devolver frame anotado + texto actual (se va actualizando solo)
     with _agent_state["lock"]:
         return img_out, _agent_state["explanation"]
+
+
+# ─── Utilidad de dibujo ──────────────────────────────────────────────────────
+
+def _drawing_metrics(img_h: int):
+    """Métricas de dibujo proporcionales al alto de la imagen."""
+    font_size = max(20, int(img_h * 0.045))
+    border_w  = max(3,  int(img_h * 0.008))
+    pad_x     = max(8,  font_size // 2)
+    pad_y     = max(5,  font_size // 4)
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except Exception:
+        font = ImageFont.load_default()
+    return font, border_w, pad_x, pad_y
 
 
 # ─── Handlers de Gradio ───────────────────────────────────────────────────────
@@ -406,23 +419,20 @@ def procesar_imagen(image):
     draw    = ImageDraw.Draw(img_pil)
     x1, y1, x2, y2 = box
 
-    # Caja principal
-    for offset in range(3):
+    font, border_w, pad_x, pad_y = _drawing_metrics(img_pil.height)
+
+    # Caja proporcional al alto de la imagen
+    for offset in range(border_w):
         draw.rectangle([x1-offset, y1-offset, x2+offset, y2+offset],
                        outline=C_ORANGE)
 
-    # Etiqueta superior
-    label = f"{name}  {conf:.0%}"
-    try:
-        font = ImageFont.truetype("arial.ttf", 18)
-    except Exception:
-        font = ImageFont.load_default()
-
-    bbox_t  = draw.textbbox((0, 0), label, font=font)
-    tw, th  = bbox_t[2] - bbox_t[0], bbox_t[3] - bbox_t[1]
-    ty      = max(y1 - th - 10, 2)
-    draw.rectangle([x1, ty, x1 + tw + 10, ty + th + 6], fill=C_ORANGE)
-    draw.text((x1 + 5, ty + 3), label, fill=C_BLACK, font=font)
+    # Etiqueta superior con tamaño proporcional
+    label  = f"{name}  {conf:.0%}"
+    bbox_t = draw.textbbox((0, 0), label, font=font)
+    tw, th = bbox_t[2] - bbox_t[0], bbox_t[3] - bbox_t[1]
+    ty     = max(y1 - th - pad_y - 2, 2)
+    draw.rectangle([x1, ty, x1 + tw + pad_x, ty + th + pad_y], fill=C_ORANGE)
+    draw.text((x1 + pad_x//2, ty + pad_y//2), label, fill=C_BLACK, font=font)
 
     # Generar explicación con Flan-T5
     explicacion = _t5_explain(cid)
@@ -644,6 +654,94 @@ body, .gradio-container {
     padding: 12px;
     border-top: 1px solid #1a1a2e;
 }
+
+/* ══════════════════════════════════════════
+   RESPONSIVE — MÓVIL  (max-width: 768px)
+   ══════════════════════════════════════════ */
+@media (max-width: 768px) {
+
+    /* Contenedor general */
+    .gradio-container {
+        padding: 6px !important;
+    }
+
+    /* Header */
+    .header-box {
+        padding: 18px 14px !important;
+    }
+    .header-box h1 {
+        font-size: 1.35rem !important;
+    }
+    .header-box p {
+        font-size: 0.85rem !important;
+    }
+    /* Badges: uno por línea para que no se apilen */
+    .badge {
+        display: block !important;
+        margin: 5px 0 !important;
+        font-size: 0.78rem !important;
+    }
+
+    /* Tabs */
+    .tab-nav {
+        display: flex !important;
+        flex-wrap: wrap !important;
+    }
+    .tab-nav button {
+        font-size: 0.88rem !important;
+        padding: 10px 12px !important;
+    }
+
+    /* Apilar columnas de Rows que llevan la clase .mobile-stack */
+    .mobile-stack {
+        flex-direction: column !important;
+    }
+    .mobile-stack > * {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    /* Imágenes: altura adaptable al viewport */
+    .mobile-stack img,
+    .mobile-stack video,
+    .image-upload {
+        min-height: 200px !important;
+        max-height: 55vh !important;
+        height: auto !important;
+    }
+
+    /* Botón principal — más grande para dedo */
+    .btn-primary {
+        font-size: 1.05rem !important;
+        padding: 14px 0 !important;
+        min-height: 48px !important;
+    }
+
+    /* Output de texto */
+    .output-md {
+        padding: 14px !important;
+        min-height: 160px !important;
+        font-size: 1rem !important;
+    }
+
+    /* Info cards — aumentar legibilidad */
+    .info-card {
+        font-size: 0.95rem !important;
+        line-height: 1.7 !important;
+        padding: 14px !important;
+    }
+
+    /* Chatbot */
+    .chatbot {
+        font-size: 1rem !important;
+        min-height: 260px !important;
+    }
+
+    /* Footer */
+    .footer-text {
+        font-size: 0.75rem !important;
+    }
+}
 """
 
 EJEMPLOS_IMAGENES = []  # Se pueden agregar si hay imagenes de ejemplo en el repo
@@ -652,6 +750,23 @@ with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo
 
     # ── Header ──
     gr.HTML("""
+    <script>
+    /* Fuerza la cámara TRASERA en dispositivos móviles al iniciar getUserMedia */
+    (function() {
+      var isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i
+        .test(navigator.userAgent);
+      if (!isMobile || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+      var orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = function(constraints) {
+        if (constraints && constraints.video) {
+          var v = (typeof constraints.video === 'object') ? constraints.video : {};
+          v.facingMode = { ideal: 'environment' };
+          constraints.video = v;
+        }
+        return orig(constraints);
+      };
+    })();
+    </script>
     <div class="header-box">
         <h1>🚦 Reconocimiento de Señales de Tránsito</h1>
         <p>Sistema de visión por computador con agente dual-transformer</p>
@@ -679,14 +794,14 @@ with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo
             </div>
             """)
 
-            with gr.Row():
+            with gr.Row(elem_classes=["mobile-stack"]):
                 webcam_in = gr.Image(
                     sources=["webcam"],
                     streaming=True,
                     type="pil",
                     label="📷 Cámara en vivo",
                     height=380,
-                    mirror_webcam=True,
+                    mirror_webcam=False,
                 )
                 webcam_out = gr.Image(
                     type="pil",
@@ -730,7 +845,7 @@ with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo
             </div>
             """)
 
-            with gr.Row():
+            with gr.Row(elem_classes=["mobile-stack"]):
                 with gr.Column(scale=1):
                     img_input = gr.Image(
                         type="pil",
@@ -790,7 +905,7 @@ with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo
                 type="tuples",
             )
 
-            with gr.Row():
+            with gr.Row(elem_classes=["mobile-stack"]):
                 txt_pregunta = gr.Textbox(
                     placeholder="Ej: ¿Qué significa la señal de ceda el paso?",
                     label="",
