@@ -14,7 +14,24 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Check HF_TOKEN is set
+        id: check_token
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::warning::HF_TOKEN no esta configurado en los secrets — se omite el deploy a HF Spaces."
+            echo "Para habilitar: GitHub repo -> Settings -> Secrets and variables -> Actions -> New repository secret"
+            echo "  Name: HF_TOKEN"
+            echo "  Value: tu token de https://huggingface.co/settings/tokens (con rol Write)"
+            echo "token_ok=false" >> $GITHUB_OUTPUT
+          else
+            echo "HF_TOKEN encontrado, procediendo con el deploy."
+            echo "token_ok=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Push to HuggingFace Spaces
+        if: steps.check_token.outputs.token_ok == 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
