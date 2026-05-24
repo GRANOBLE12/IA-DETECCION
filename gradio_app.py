@@ -9,6 +9,8 @@ Despliegue: https://huggingface.co/spaces
 
 import os
 import re
+import time
+import threading
 import warnings
 import numpy as np
 import cv2
@@ -22,7 +24,35 @@ from transformers import (
     AutoTokenizer,
     logging as hf_logging,
 )
+
+# ── Shim: HfFolder fue removido de huggingface_hub>=0.30 pero Gradio <=5.x
+# lo importa en oauth.py. Inyectamos un stub antes de que Gradio cargue.
+import huggingface_hub as _hfh
+if not hasattr(_hfh, "HfFolder"):
+    class _HfFolderShim:
+        @staticmethod
+        def get_token():   return None
+        @staticmethod
+        def save_token(t): pass
+        @staticmethod
+        def delete_token():pass
+    _hfh.HfFolder = _HfFolderShim
+
 import gradio as gr
+
+# ── Patch: bug en gradio_client 5.0.0 — get_type() falla cuando schema es bool
+# gradio_client/utils.py:882  if "const" in schema  → TypeError si schema=True/False
+# Parcheamos la funcion para que maneje valores no-dict graciosamente.
+try:
+    import gradio_client.utils as _gcu
+    _orig_get_type = _gcu.get_type
+    def _safe_get_type(schema):
+        if not isinstance(schema, dict):
+            return "Any"
+        return _orig_get_type(schema)
+    _gcu.get_type = _safe_get_type
+except Exception:
+    pass  # si falla el patch, Gradio sigue igual
 
 warnings.filterwarnings("ignore")
 hf_logging.set_verbosity_error()
@@ -201,6 +231,124 @@ def _find_signs(question: str):
     return sorted(scores, key=lambda x: -scores[x])[:3]
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENTE REACTIVO PARA WEBCAM EN TIEMPO REAL
+# Estado global compartido entre frames (igual que agente.py)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TRIGGER_FRAMES = 3      # frames consecutivos con misma señal para activar T5
+CONF_REALTIME  = 0.85   # umbral mas permisivo para webcam (frames con ruido)
+
+_agent_state = {
+    "lock":          threading.Lock(),
+    "last_class_id": -1,
+    "consecutive":   0,
+    "explanation":   "🎥 Apunta la cámara a una señal de tránsito...",
+    "generating":    False,
+    "current_sign":  "",
+}
+
+
+def _t5_async(class_id: int, sign_name: str):
+    """Lanza Flan-T5 en thread separado — el stream no se bloquea."""
+    with _agent_state["lock"]:
+        _agent_state["generating"]  = True
+        _agent_state["explanation"] = f"🔄 Analizando '{sign_name}' con Flan-T5..."
+
+    def _run():
+        text = _t5_explain(class_id)
+        with _agent_state["lock"]:
+            _agent_state["explanation"] = (
+                f"## 🚦 {sign_name}\n\n"
+                f"### 💬 Explicación (Flan-T5):\n{text}\n\n"
+                f"### 📋 Descripción técnica:\n{DESCRIPTIONS.get(class_id, '')}"
+            )
+            _agent_state["generating"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def procesar_webcam_frame(frame):
+    """
+    Ciclo del agente para cada frame de la webcam (igual que agente.py):
+      1. PERCIBIR  → detector de color
+      2. CLASIFICAR → DeiT-tiny
+      3. RAZONAR   → señal nueva + estable?
+      4. ACTUAR    → lanzar T5 en thread (no bloquea)
+    """
+    if frame is None:
+        with _agent_state["lock"]:
+            return None, _agent_state["explanation"]
+
+    # Normalizar a RGB
+    if frame.mode != "RGB":
+        frame = frame.convert("RGB")
+    frame_bgr = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR)
+
+    # ── PERCIBIR + CLASIFICAR ──────────────────────────────────────────────────
+    boxes = _detect(frame_bgr)
+    best  = None
+    if boxes:
+        candidates = []
+        for box in boxes:
+            x1, y1, x2, y2 = box
+            crop = frame_bgr[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            cid, name, conf = _classify(crop)
+            if conf >= CONF_REALTIME:
+                candidates.append((cid, name, conf, box))
+        if candidates:
+            best = max(candidates, key=lambda x: x[2])
+
+    # ── DIBUJAR sobre el frame ─────────────────────────────────────────────────
+    img_out = frame.copy()
+    if best:
+        cid, name, conf, box = best
+        draw = ImageDraw.Draw(img_out)
+        x1, y1, x2, y2 = box
+
+        # Caja gruesa
+        for o in range(3):
+            draw.rectangle([x1-o, y1-o, x2+o, y2+o], outline=C_ORANGE)
+
+        # Etiqueta arriba de la caja
+        label = f"{name}  {conf:.0%}"
+        try:
+            font = ImageFont.truetype("arial.ttf", 18)
+        except Exception:
+            font = ImageFont.load_default()
+        bb     = draw.textbbox((0, 0), label, font=font)
+        tw, th = bb[2]-bb[0], bb[3]-bb[1]
+        ty     = max(y1 - th - 10, 2)
+        draw.rectangle([x1, ty, x1+tw+10, ty+th+6], fill=C_ORANGE)
+        draw.text((x1+5, ty+3), label, fill=C_BLACK, font=font)
+
+        # ── RAZONAR: estabilidad temporal antes de activar T5 ──────────────────
+        with _agent_state["lock"]:
+            if cid == _agent_state["last_class_id"]:
+                _agent_state["consecutive"] += 1
+            else:
+                _agent_state["consecutive"]   = 1
+                _agent_state["last_class_id"] = cid
+
+            should_trigger = (
+                _agent_state["consecutive"] == TRIGGER_FRAMES
+                and not _agent_state["generating"]
+                and _agent_state["current_sign"] != name
+            )
+            if should_trigger:
+                _agent_state["current_sign"] = name
+
+        # ── ACTUAR: lanzar Flan-T5 en thread ───────────────────────────────────
+        if should_trigger:
+            _t5_async(cid, name)
+
+    # Devolver frame anotado + texto actual (se va actualizando solo)
+    with _agent_state["lock"]:
+        return img_out, _agent_state["explanation"]
+
+
 # ─── Handlers de Gradio ───────────────────────────────────────────────────────
 
 def procesar_imagen(image):
@@ -209,6 +357,10 @@ def procesar_imagen(image):
     """
     if image is None:
         return None, "⚠️ Sube una imagen para analizar."
+
+    # Normalizar a RGB (Gradio 5 puede entregar RGBA/P si es PNG con alpha)
+    if image.mode != "RGB":
+        image = image.convert("RGB")
 
     # PIL → BGR numpy
     frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -512,7 +664,61 @@ with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo
     with gr.Tabs():
 
         # ══════════════════════════════════════════════════════════
-        # TAB 1 — AGENTE VISUAL
+        # TAB 1 — TIEMPO REAL (WEBCAM STREAMING)
+        # Mismo pipeline que agente.py local
+        # ══════════════════════════════════════════════════════════
+        with gr.TabItem("🎥 Tiempo Real"):
+            gr.HTML("""
+            <div class="info-card">
+                <b>Agente en tiempo real con webcam:</b><br>
+                🎯 Detección continua frame por frame (igual que <code>agente.py</code> local)<br>
+                🤖 <b>DeiT-tiny</b> clasifica cada frame; <b>Flan-T5</b> se activa
+                cuando una señal aparece de forma <b>estable</b> (3 frames seguidos)<br>
+                🔒 Tu navegador pedirá <b>permiso de cámara</b> — acéptalo.
+                El video <b>no se envía a ningún servidor</b> excepto al de HF Spaces.
+            </div>
+            """)
+
+            with gr.Row():
+                webcam_in = gr.Image(
+                    sources=["webcam"],
+                    streaming=True,
+                    type="pil",
+                    label="📷 Cámara en vivo",
+                    height=380,
+                    mirror_webcam=True,
+                )
+                webcam_out = gr.Image(
+                    type="pil",
+                    label="🎯 Detección del agente",
+                    height=380,
+                    interactive=False,
+                )
+
+            stream_status = gr.Markdown(
+                value="🎥 *Espera unos segundos a que cargue la cámara, luego apunta a una señal...*",
+                elem_classes=["output-md"],
+            )
+
+            # Streaming: cada frame se procesa automaticamente
+            webcam_in.stream(
+                fn=procesar_webcam_frame,
+                inputs=[webcam_in],
+                outputs=[webcam_out, stream_status],
+                stream_every=0.4,      # ~2.5 fps (suficiente y evita saturar HF)
+                show_progress="hidden",
+            )
+
+            gr.HTML("""
+            <div class="info-card">
+                ⚡ <b>Latencia esperada:</b> 300-600ms por frame en HF free tier (sin GPU).<br>
+                Si quieres velocidad real (~30 fps) ejecuta localmente:
+                <code>python agente.py</code>
+            </div>
+            """)
+
+        # ══════════════════════════════════════════════════════════
+        # TAB 2 — AGENTE VISUAL (imagen estática)
         # ══════════════════════════════════════════════════════════
         with gr.TabItem("🤖 Agente Visual"):
             gr.HTML("""
@@ -581,8 +787,7 @@ with gr.Blocks(css=CSS, title="Reconocimiento de Señales de Tránsito") as demo
                 label="Conversación",
                 height=380,
                 elem_classes=["chatbot"],
-                avatar_images=("👤", "🚦"),
-                bubble_full_width=False,
+                type="tuples",
             )
 
             with gr.Row():
@@ -691,5 +896,9 @@ El modelo fue entrenado en el **German Traffic Sign Recognition Benchmark**:
     """)
 
 
-if __name__ == "__main__":
-    demo.launch()
+# En HF Spaces el 'spaces' package intercepta demo.launch().
+# show_api=False evita el bug de Gradio 5.0.0 en get_api_info():
+#   "TypeError: argument of type 'bool' is not iterable"
+# que causa el "No API found" en el UI.
+demo.queue()
+demo.launch(show_api=False)
