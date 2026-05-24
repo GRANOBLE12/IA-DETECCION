@@ -41,6 +41,7 @@ jobs:
             echo "::error::HF_TOKEN no está configurado en GitHub Secrets"
             exit 1
           fi
+          git lfs install
           git config --global user.email "ci@github.com"
           git config --global user.name "GitHub Actions"
           git push https://GRANOBLE12:$HF_TOKEN@huggingface.co/spaces/GRANOBLE12/reconocimiento-senales-transito main --force
