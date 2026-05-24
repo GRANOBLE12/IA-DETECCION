@@ -2,7 +2,7 @@
 title: Reconocimiento Señales Transito
 emoji: 🚦
 colorFrom: red
-colorTo: orange
+colorTo: yellow
 sdk: gradio
 sdk_version: 5.31.0
 python_version: "3.10"
